@@ -1,0 +1,93 @@
+/* assets/ww-frontend.css */
+
+#ww-dashboard-root {
+  max-width: 800px;
+  margin: 2rem auto;
+  font-family: system-ui, sans-serif;
+  color: #333;
+}
+
+.ww-event-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1rem;
+}
+
+.ww-event-list .ww-event-item {
+  cursor: pointer;
+  padding: 0.75rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  margin-bottom: 0.5rem;
+  transition: background 0.2s;
+}
+
+.ww-event-list .ww-event-item:hover {
+  background: #f9f9f9;
+}
+
+.ww-event-list .ww-event-item.selected {
+  background: #eef5ff;
+  border-color: #a3c0f9;
+}
+
+.ww-guest-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+
+.ww-guest-table th,
+.ww-guest-table td {
+  padding: 0.75rem;
+  border: 1px solid #ddd;
+  text-align: left;
+}
+
+.ww-add-guest {
+  margin-top: 1rem;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.ww-add-guest .ww-input {
+  flex: 1;
+  padding: 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+
+.ww-add-guest .ww-btn {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 4px;
+  background: #0073aa;
+  color: white;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.ww-add-guest .ww-btn:hover {
+  background: #005177;
+}
+
+.ww-btn-copy {
+  background: #00875a;
+  color: white;
+  border: none;
+  padding: 0.3rem 0.6rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.ww-btn-copy:hover {
+  background: #006644;
+}
+
+.loading {
+  text-align: center;
+  margin: 2rem 0;
+  font-style: italic;
+  color: #666;
+}
