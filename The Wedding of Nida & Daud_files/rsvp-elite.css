@@ -1,0 +1,292 @@
+/**
+ * Wedwebs Elite RSVP 3.0.2
+ */
+ :root {
+    /* Global */
+    --ww-primary: #222;
+    --ww-accent: #1e1e1e;
+    --ww-font: 'Inter', -apple-system, sans-serif;
+    --ww-bg: #f8fafc;
+    --ww-card-bg: #ffffff;
+    --ww-border: #f0f0f0;
+    --ww-radius: 16px;
+    --ww-shadow: 0 10px 30px rgba(0,0,0,0.05);
+
+    /* Element-level controls */
+    --ww-event-title-color: var(--ww-primary);
+    --ww-event-title-size: 1rem;
+    --ww-label-color: #666;
+    --ww-label-size: 0.9rem;
+    --ww-input-color: var(--ww-primary);
+    --ww-input-size: 16px;
+    --ww-button-color: #fff;
+    --ww-button-bg: var(--ww-accent);
+}
+
+/* --- LOGIKA VISIBILITAS --- */
+/* Sembunyikan elemen secara total saat di halaman live sesuai state */
+.is-lang-id, .is-lang-en, .is-lang-sp, .is-lang-ar,
+.ceremony, .reception, .afterparty, 
+.event_1, .event_2, .event_3,
+.eliteform, .eliteqr, .eliteno { 
+    display: none !important; 
+}
+
+/* State Aktif: Dipanggil oleh JS Engine GMS */
+.gms-visible-flex { 
+    display: flex !important; 
+}
+
+/* Logika State Berdasarkan Body Class */
+body.rsvp-pending .eliteform {display: block !important; }
+body.rsvp-pending .eliteqr { display: flex !important; }
+body.rsvp-confirmed .eliteqr { display: flex !important; }
+body.rsvp-declined .eliteno { display: flex !important; }
+
+/* --- EDITOR MODE OVERRIDE (COMPREHENSIVE) --- */
+/* Memastikan desainer bisa melihat semua elemen dinamis di Elementor Editor */
+body.elementor-editor-active .is-lang-id,
+body.elementor-editor-active .is-lang-en,
+body.elementor-editor-active .is-lang-sp,
+body.elementor-editor-active .is-lang-ar,
+body.elementor-editor-active .ceremony,
+body.elementor-editor-active .reception,
+body.elementor-editor-active .afterparty,
+body.elementor-editor-active .event_1,
+body.elementor-editor-active .event_2,
+body.elementor-editor-active .event_3,
+body.elementor-editor-active .eliteform,
+body.elementor-editor-active .eliteqr,
+body.elementor-editor-active .eliteno { 
+    display: flex !important; 
+    visibility: visible !important;
+}
+
+/* --- CONTAINER UTAMA --- */
+#wedwebs-elite-app {
+    width: 92%;
+    max-width: 480px;
+    margin: 20px auto;
+    box-sizing: border-box;
+    display: block;
+    font-family: var(--ww-font);
+}
+
+/* --- SECTION / BOX TITLES (form + QR) --- */
+#wedwebs-elite-app .ww-form-title {
+    text-align: var(--ww-title-align, center);
+    margin-bottom: var(--ww-title-margin, 16px);
+}
+#wedwebs-elite-app .ww-form-title h3 {
+    color: var(--ww-title-color, var(--ww-primary, #222));
+    font-size: var(--ww-title-size, 1.1rem);
+    font-weight: var(--ww-title-weight, 600);
+    margin: 0;
+}
+
+/* --- QR CONTAINER (render target for E-Ticket) --- */
+/* Layout only; visibility controlled by .eliteqr + body.rsvp-* */
+#wedwebs-elite-app #ww-qr-container.eliteqr {
+    width: 100% !important;
+    box-sizing: border-box !important;
+    margin-top: 16px !important;
+    margin-bottom: 20px !important;
+}
+
+/* --- RESULT CARD / E-TICKET --- */
+#wedwebs-elite-app .ww-result-card {
+    background: var(--ww-qr-bg, var(--ww-card-bg)) !important;
+    border-radius: var(--ww-radius) !important;
+    padding: 25px !important;
+    box-shadow: var(--ww-shadow) !important;
+    text-align: center !important;
+    border: 1px solid var(--ww-border) !important;
+    margin-bottom: 25px !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+    display: block;
+}
+
+#wedwebs-elite-app .ww-qr-wrapper {
+    background: transparent !important;
+    padding: 10px !important;
+    display: inline-block !important;
+    margin-bottom: 15px !important;
+    width: 100% !important;
+    max-width: 180px !important;
+}
+
+#wedwebs-elite-app .ww-qr-wrapper img {
+    width: 100% !important;
+    height: auto !important;
+    mix-blend-mode: multiply !important; 
+    display: block;
+    margin: 0 auto;
+}
+
+#wedwebs-elite-app .ww-guest-name {
+    font-size: clamp(1.2rem, 5vw, 1.5rem) !important;
+    font-weight: 800 !important;
+    color: var(--ww-primary) !important;
+    margin: 0 0 5px 0 !important;
+    word-break: break-word !important;
+    line-height: 1.2 !important;
+}
+
+#wedwebs-elite-app .ww-badge {
+    display: inline-block !important;
+    padding: 6px 14px !important;
+    background: #f7f7f7 !important;
+    color: #888 !important;
+    border-radius: 100px !important;
+    font-size: 9px !important;
+    font-weight: 700 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 1px !important;
+    margin-bottom: 10px !important;
+}
+
+#wedwebs-elite-app .ww-divider {
+    border: none !important;
+    border-top: 1px solid #eee !important;
+    margin: 15px 0 !important;
+    height: 1px !important;
+}
+
+#wedwebs-elite-app .ww-details-grid {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 10px !important;
+}
+
+#wedwebs-elite-app .ww-detail-item span {
+    display: block !important;
+    font-size: 9px !important;
+    color: #bbb !important;
+    text-transform: uppercase !important;
+    margin-bottom: 2px !important;
+    letter-spacing: 0.5px !important;
+}
+
+#wedwebs-elite-app .ww-detail-item strong {
+    font-size: 12px !important;
+    color: #444 !important;
+    font-weight: 600 !important;
+}
+
+/* --- UNIFIED FORM --- */
+#wedwebs-elite-app .ww-form-wrapper {
+    background: var(--ww-card-bg) !important;
+    border-radius: var(--ww-radius) !important;
+    padding: 25px !important;
+    border: 1px solid var(--ww-border) !important;
+    box-shadow: var(--ww-shadow) !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+    display: block;
+}
+
+#wedwebs-elite-app .ww-form-section {
+    margin-bottom: 20px !important;
+    padding-bottom: 15px !important;
+    border-bottom: 1px solid #f9f9f9 !important;
+}
+
+#wedwebs-elite-app .ww-form-section:last-child,
+#wedwebs-elite-app .ww-global-section,
+#wedwebs-elite-app .ww-form-section:has(+ .ww-global-section) {
+    border-bottom: none !important;
+    padding-bottom: 0 !important;
+}
+
+#wedwebs-elite-app .ww-section-title {
+    font-weight: 700 !important;
+    font-size: var(--ww-event-title-size) !important;
+    color: var(--ww-event-title-color) !important;
+    margin-bottom: 12px !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.5px !important;
+    display: block;
+}
+
+#wedwebs-elite-app .ww-field-group {
+    margin-bottom: 15px !important;
+    text-align: left !important;
+}
+
+#wedwebs-elite-app .ww-field-group label {
+    display: block !important;
+    font-size: var(--ww-label-size) !important;
+    font-weight: 600 !important;
+    margin-bottom: 6px !important;
+    color: var(--ww-label-color) !important;
+    text-transform: none !important;
+}
+
+/* --- INPUTS & SELECTS --- */
+#wedwebs-elite-app select.ww-input-field,
+#wedwebs-elite-app select.ww-select,
+#wedwebs-elite-app select,
+#wedwebs-elite-app input.ww-input-field,
+#wedwebs-elite-app textarea.ww-input-field {
+    width: 100% !important;
+    padding: 12px 15px !important;
+    border: 1.5px solid #f0f0f0 !important;
+    border-radius: 10px !important;
+    font-size: var(--ww-input-size) !important;
+    background: #fafafa !important;
+    transition: all 0.3s ease !important;
+    box-sizing: border-box !important;
+    color: var(--ww-input-color) !important;
+    margin: 0 !important;
+    height: auto !important;
+    box-shadow: none !important;
+}
+
+#wedwebs-elite-app .ww-field-group select {
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+}
+
+#wedwebs-elite-app .ww-input-field:focus {
+    background: #fff !important;
+    border-color: var(--ww-accent) !important;
+    outline: none !important;
+    box-shadow: 0 0 0 3px rgba(30, 30, 30, 0.05) !important;
+}
+
+/* --- BUTTON --- */
+#wedwebs-elite-app .ww-btn-submit {
+    width: 100% !important;
+    padding: 18px !important;
+    background: var(--ww-button-bg) !important;
+    color: var(--ww-button-color) !important;
+    border: none !important;
+    border-radius: 12px !important;
+    font-weight: 700 !important;
+    cursor: pointer !important;
+    margin-top: 10px !important;
+    font-size: 1rem !important;
+    transition: all 0.3s ease !important;
+    display: block !important;
+    text-align: center !important;
+    text-decoration: none !important;
+}
+
+#wedwebs-elite-app .ww-btn-submit:hover {
+    opacity: 0.9 !important;
+    transform: translateY(-1px) !important;
+}
+
+.ww-status { text-align: center; padding: 40px; color: #94a3b8; font-size: 0.9rem; }
+
+.ww-error-msg {
+    color: #dc2626;
+    font-size: 13px;
+    padding: 10px 14px;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 6px;
+    margin-bottom: 12px;
+}

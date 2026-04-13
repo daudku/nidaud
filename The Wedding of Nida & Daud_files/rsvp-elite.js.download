@@ -1,0 +1,665 @@
+/**
+ * Wedwebs GMS Elite RSVP Engine
+ * Versi: 3.0.0 (Security Hardened + Refactored)
+ *
+ * Changes from 2.9.6:
+ *  - [SECURITY] Replaced all innerHTML string interpolation with safe DOM helpers (escapeHtml / setEl)
+ *  - [SECURITY] Added fetch timeout via AbortController (8 s) on both GET and POST
+ *  - [QUALITY]  Extracted reduceEventStatus() – single source of truth, no more duplicate logic
+ *  - [QUALITY]  Extracted buildQrCard() and buildEventSection() – renderEliteUI is now readable
+ *  - [QUALITY]  Replaced alert() with inline #ww-error-msg element
+ *  - [QUALITY]  getLabel() no longer swallows all errors silently
+ *  - [PERF]     guestEventSet (Set) replaces linear-array lookup in handleEventVisibility
+ *  - [PERF]     Cached repeated jQuery selectors; removed redundant DOM queries inside loops
+ *  - [PERF]     prefillFormFields() only rebuilds <option> list when pax_allocated actually changed
+ */
+
+(function ($) {
+    "use strict";
+
+    /* ─── Utility: safe HTML escaping ─────────────────────────────────────── */
+    /**
+     * Escape a value for safe insertion into the DOM as text.
+     * Always call this before putting any server-supplied string into HTML.
+     */
+    function escapeHtml(val) {
+        if (val == null) return '';
+        return String(val)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    /**
+     * Set text content of a selector safely (no XSS risk).
+     * Prefer this over .text() chains when you want a concise one-liner.
+     */
+    function setEl(selector, text) {
+        $(selector).text(text == null ? '' : String(text));
+    }
+
+    /**
+     * Create a fetch request that auto-aborts after `ms` milliseconds.
+     * Returns { promise, abort } so callers can cancel manually if needed.
+     */
+    function fetchWithTimeout(url, options, ms) {
+        ms = ms || 8000;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), ms);
+        const promise = fetch(url, { ...options, signal: controller.signal })
+            .finally(() => clearTimeout(timer));
+        return promise;
+    }
+
+    /* ─── Main Engine ──────────────────────────────────────────────────────── */
+    const GMS_ENGINE = {
+
+        token: new URLSearchParams(window.location.search).get('guest_id'),
+        state: null,
+
+        /**
+         * Maps CSS class selectors → event names that trigger visibility.
+         * Kept as-is; extending is just adding a new entry here.
+         */
+        eventMapping: {
+            '.ceremony':   ['Akad Nikah', 'Holy Matrimony', 'Pemberkatan', 'Ceremony'],
+            '.reception':  ['Resepsi', 'Reception'],
+            '.afterparty': ['After Party'],
+        },
+
+        /* ── Lifecycle ──────────────────────────────────────────────────────── */
+
+        init: async function () {
+            if (!this.token) {
+                this.handleLanguageVisibility();
+                this.handleEventVisibility();
+                this.showStatus('ww-error');
+                return;
+            }
+            await this.fetchData();
+            if (this.state) {
+                this.syncAll();
+                this.renderEliteUI();
+                this.bindEvents();
+            }
+        },
+
+        fetchData: async function () {
+            try {
+                const baseUrl = (wwGmsConfig.apiUrl || '').replace(/\/$/, '');
+                const res = await fetchWithTimeout(`${baseUrl}/guest-info/${this.token.trim()}`);
+                const json = await res.json();
+
+                if (json.success && json.data) {
+                    this.state = json.data;
+                    this.normalizeStateFromEvents(this.state);
+                    document.dispatchEvent(new CustomEvent('gmsDataReady', { detail: this.state }));
+                } else {
+                    this.showStatus('ww-error');
+                }
+            } catch (e) {
+                // AbortError = timeout; others = network/parse failures
+                console.error('[GMS Elite] fetchData error:', e.name, e.message);
+                this.showStatus('ww-error');
+            }
+        },
+
+        /* ── State helpers ──────────────────────────────────────────────────── */
+
+        /**
+         * SINGLE SOURCE OF TRUTH for collapsing per-event statuses into a
+         * top-level rsvp_status + summed pax_confirmed.
+         *
+         * Called after initial fetch AND after a successful submit — no more
+         * duplicated inline status-reduction logic.
+         *
+         * @param {object} stateObj  The state (or partial data) to normalise in-place.
+         */
+        normalizeStateFromEvents: function (stateObj) {
+            if (!stateObj || !Array.isArray(stateObj.events) || !stateObj.events.length) return;
+
+            stateObj.rsvp_status = this.reduceEventStatus(stateObj.events, stateObj.rsvp_status);
+
+            const sum = stateObj.events.reduce(
+                (acc, ev) => acc + (parseInt(ev.pax_confirmed, 10) || 0),
+                0
+            );
+            // Only override top-level pax_confirmed when per-event data is present
+            if (sum > 0 || stateObj.events.some(ev => Object.prototype.hasOwnProperty.call(ev, 'pax_confirmed'))) {
+                stateObj.pax_confirmed = sum;
+            }
+        },
+
+        /**
+         * Collapse an array of events into a single status string.
+         * "confirmed" beats "declined" beats fallback.
+         *
+         * @param  {Array}  events
+         * @param  {string} fallback  Existing top-level status (or 'pending')
+         * @returns {string}
+         */
+        reduceEventStatus: function (events, fallback) {
+            const statuses = events.map(ev => (ev.rsvp_status || '').toLowerCase());
+            if (statuses.some(s => s === 'confirmed')) return 'confirmed';
+            if (statuses.some(s => s === 'declined'))  return 'declined';
+            return fallback || 'pending';
+        },
+
+        /* ── Sync (DOM → state) ─────────────────────────────────────────────── */
+
+        syncAll: function () {
+            this.handleBodyClasses();
+            this.handleLanguageVisibility();
+            this.handleEventVisibility();
+            this.prefillFormFields();
+        },
+
+        handleBodyClasses: function () {
+            const status = (this.state.rsvp_status || 'pending').toLowerCase();
+            const cls = { pending: 'rsvp-pending', confirmed: 'rsvp-confirmed', declined: 'rsvp-declined' };
+            $('body')
+                .removeClass('rsvp-pending rsvp-confirmed rsvp-declined')
+                .addClass(cls[status] || 'rsvp-pending');
+        },
+
+        handleLanguageVisibility: function () {
+            const langMap = { en: 'is-lang-en', sp: 'is-lang-sp', ar: 'is-lang-ar', id: 'is-lang-id' };
+            // No guest_id or no state → fallback to Indonesian
+            const lang = (this.state && this.state.lang) || 'id';
+            const activeCls = langMap[lang] || 'is-lang-id';
+            $('.is-lang-id, .is-lang-en, .is-lang-sp, .is-lang-ar').removeClass('gms-visible-flex');
+            $(`.${activeCls}`).addClass('gms-visible-flex');
+        },
+
+        handleEventVisibility: function () {
+            // No guest_id → show all event sections (preview/default state)
+            if (!this.token || !this.state) {
+                Object.keys(this.eventMapping).forEach(cls => {
+                    $(cls).addClass('gms-visible-flex');
+                });
+                return;
+            }
+            // PERF: Set lookup is O(1) vs Array.includes O(n) — negligible here but correct habit
+            const guestEventSet = new Set(
+                (this.state.events || []).map(ev => ev.event_name)
+            );
+            Object.entries(this.eventMapping).forEach(([cls, names]) => {
+                const isInvited = names.some(n => guestEventSet.has(n));
+                $(cls).toggleClass('gms-visible-flex', isInvited);
+            });
+        },
+
+        prefillFormFields: function () {
+            const paxSelect = $('select[name*="pax_confirmed"], .ww-pax-select');
+            if (!paxSelect.length) return;
+
+            const max = parseInt(this.state.pax_allocated || 1, 10);
+
+            // PERF: Skip rebuilding the option list if it's already correct
+            if (parseInt(paxSelect.attr('data-max'), 10) !== max) {
+                paxSelect.empty().append('<option value="">Pilih Jumlah Orang</option>');
+                for (let i = 1; i <= max; i++) {
+                    paxSelect.append(
+                        $('<option>', { value: i, text: `${i} Orang` })
+                    );
+                }
+                paxSelect.attr('data-max', max);
+            }
+
+            if (this.state.pax_confirmed) {
+                paxSelect.val(this.state.pax_confirmed);
+            }
+        },
+
+        /* ── Labels ─────────────────────────────────────────────────────────── */
+
+        /**
+         * Read a label from form_config.labels.
+         * Returns the key itself as fallback (same as before) but now logs a
+         * warning so missing labels are visible in the console during dev/QA.
+         */
+        getLabel: function (key) {
+            const labels = this.state && this.state.form_config && this.state.form_config.labels;
+            if (!labels) {
+                console.warn(`[GMS Elite] getLabel("${key}"): form_config.labels missing`);
+                return key;
+            }
+            const label = labels[key];
+            if (typeof label !== 'string') {
+                console.warn(`[GMS Elite] getLabel("${key}"): label not found`);
+                return key;
+            }
+            return label;
+        },
+
+        /* ── Rendering ──────────────────────────────────────────────────────── */
+
+        renderEliteUI: function () {
+            const s = this.state;
+
+            // Guest name + category
+            setEl('.ww-guest-name-display, #guest-name', s.name || 'Tamu Undangan');
+            const showCategory = s.category && s.category !== 'Regular';
+            $('#guest-category').text(showCategory ? s.category : '').toggle(!!showCategory);
+
+            // Submit label
+            setEl('#ww-submit-btn', this.getLabel('submit_button'));
+
+            // QR / e-ticket card
+            this.buildQrCard(s);
+
+            // Form sections (events + optional global fields)
+            this.buildFormSections(s);
+
+            // Loading / form visibility
+            $('#ww-loading').hide();
+            const isPending = (s.rsvp_status || 'pending').toLowerCase() === 'pending';
+            $('#ww-form-content').toggle(isPending);
+        },
+
+        /**
+         * Build the e-ticket / QR result card safely (no raw interpolation of
+         * server data into innerHTML).
+         */
+        buildQrCard: function (s) {
+            const container = document.getElementById('ww-qr-container');
+            if (!container || !s.qr_code_token) return;
+
+            const showQr = container.dataset.showQr !== 'false';
+
+            // Clear previous content
+            container.innerHTML = '';
+
+            const card = document.createElement('div');
+            card.className = 'ww-result-card';
+
+            // Card title
+            const cardTitle = document.createElement('div');
+            cardTitle.className = 'ww-form-title';
+            const cardTitleH3 = document.createElement('h3');
+            cardTitleH3.textContent = showQr ? 'QR Code' : 'RSVP Status';
+            cardTitle.appendChild(cardTitleH3);
+            card.appendChild(cardTitle);
+
+            // QR image — hanya tampil jika show_qr="true"
+            if (showQr) {
+                const qrImg = document.createElement('img');
+                qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(s.qr_code_token)}`;
+                qrImg.alt = 'QR Code';
+                const qrWrapper = document.createElement('div');
+                qrWrapper.className = 'ww-qr-wrapper';
+                qrWrapper.appendChild(qrImg);
+                card.appendChild(qrWrapper);
+            }
+
+            // Guest name heading
+            const nameEl = document.createElement('h3');
+            nameEl.className = 'ww-guest-name';
+            nameEl.textContent = s.name || '';
+            card.appendChild(nameEl);
+
+            // Category badge (optional)
+            if (s.category && s.category !== 'Regular') {
+                const badge = document.createElement('p');
+                badge.className = 'ww-badge';
+                badge.textContent = s.category;
+                card.appendChild(badge);
+            }
+
+            card.appendChild(document.createElement('hr')).className = 'ww-divider';
+
+            // Details grid
+            const grid = document.createElement('div');
+            grid.className = 'ww-details-grid';
+
+            const detailRows = [
+                { label: 'Status',     value: (s.rsvp_status || 'PENDING').toUpperCase() },
+                { label: 'Headcount',  value: `${s.pax_confirmed || s.pax_allocated} Pax` },
+                s.guest_code && String(s.guest_code).trim() ? { label: 'Code',  value: String(s.guest_code).trim() } : null,
+                s.table      && String(s.table).trim()      ? { label: 'Table', value: String(s.table).trim()      } : null,
+            ];
+
+            detailRows.filter(Boolean).forEach(({ label, value }) => {
+                const item = document.createElement('div');
+                item.className = 'ww-detail-item';
+                const labelEl = document.createElement('span');
+                labelEl.textContent = label;
+                const valueEl = document.createElement('strong');
+                valueEl.textContent = value;
+                item.appendChild(labelEl);
+                item.appendChild(valueEl);
+                grid.appendChild(item);
+            });
+
+            card.appendChild(grid);
+            container.appendChild(card);
+        },
+
+        /**
+         * Build per-event form sections + global optional fields.
+         * All user-supplied strings go through textContent / value — never innerHTML.
+         */
+        buildFormSections: function (s) {
+            const eventsList = document.getElementById('ww-events-list');
+            if (!eventsList) return;
+
+            eventsList.innerHTML = '';
+
+            const features = (s.form_config && s.form_config.enabled_features) || [];
+            const hasMeal             = features.includes('meal_preference');
+            const hasAdditionalGuest  = features.includes('additional_guest');
+            const hasDietaryRestriction = features.includes('dietary_restriction');
+
+            // Cache label lookups — avoids repeated object traversal inside loop
+            const labelConfirmed       = this.getLabel('rsvp_confirmed');
+            const labelDeclined        = this.getLabel('rsvp_declined');
+            const labelRsvpQ           = this.getLabel('rsvp_question');
+            const labelPaxQ            = this.getLabel('pax_question');
+            const labelMealQ           = hasMeal             ? this.getLabel('meal_question')                : '';
+            const labelAdditionalQ     = hasAdditionalGuest  ? this.getLabel('additional_guest_question')   : '';
+            const labelDietaryQ        = hasDietaryRestriction ? this.getLabel('dietary_restriction_question') : '';
+
+            const showEventTitle = s.events.length > 1;
+            s.events.forEach(ev => {
+                eventsList.appendChild(
+                    this.buildEventSection(ev, {
+                        labelConfirmed, labelDeclined, labelRsvpQ, labelPaxQ,
+                        hasMeal, labelMealQ,
+                        hasAdditionalGuest, labelAdditionalQ,
+                        hasDietaryRestriction, labelDietaryQ,
+                        showEventTitle,
+                    })
+                );
+            });
+
+            // Global optional fields
+            const globalFields = [
+                { id: 'transport',     label: 'transport_question'     },
+                { id: 'accommodation', label: 'accommodation_question' },
+                { id: 'remark',        label: 'remark_question'        },
+            ];
+
+            const hasGlobalFields = globalFields.some(f => features.includes(f.id));
+
+            // Remove the divider from the last event section when global fields follow
+            if (hasGlobalFields && eventsList.lastElementChild) {
+                eventsList.lastElementChild.style.borderBottom = 'none';
+                eventsList.lastElementChild.style.paddingBottom = '0';
+            }
+
+            globalFields.forEach(f => {
+                if (!features.includes(f.id)) return;
+
+                const section = document.createElement('div');
+                section.className = 'ww-form-section ww-global-section';
+                section.style.borderBottom = 'none';
+                section.style.paddingBottom = '0';
+
+                const group = document.createElement('div');
+                group.className = 'ww-field-group';
+
+                const lbl = document.createElement('label');
+                lbl.textContent = this.getLabel(f.label);
+
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.name = `global_${f.id}`;
+                input.className = 'ww-input ww-input-field';
+                input.value = s[f.id] || '';
+
+                group.appendChild(lbl);
+                group.appendChild(input);
+                section.appendChild(group);
+                eventsList.appendChild(section);
+            });
+
+            this.applyDeclineVisibility();
+        },
+
+        /**
+         * Build a single event section element.
+         * Returns a detached DOM node — caller appends it.
+         */
+        buildEventSection: function (ev, labels) {
+            const {
+                labelConfirmed, labelDeclined, labelRsvpQ, labelPaxQ,
+                hasMeal, labelMealQ,
+                hasAdditionalGuest, labelAdditionalQ,
+                hasDietaryRestriction, labelDietaryQ,
+                showEventTitle,
+            } = labels;
+            const maxPax = Math.max(1, Number(ev.pax_allocated) || 1);
+
+            const section = document.createElement('div');
+            section.className = `ww-form-section ww-slug-${escapeHtml(ev.slug)}`;
+
+            // Section title — only shown when there are multiple events
+            if (showEventTitle) {
+                const title = document.createElement('div');
+                title.className = 'ww-section-title';
+                title.textContent = ev.event_name;
+                section.appendChild(title);
+            }
+
+            // RSVP status select
+            const rsvpGroup = document.createElement('div');
+            rsvpGroup.className = 'ww-field-group';
+            const rsvpLabel = document.createElement('label');
+            rsvpLabel.textContent = labelRsvpQ;
+            const rsvpSelect = document.createElement('select');
+            rsvpSelect.name = `rsvp_status_${ev.id}`;
+            rsvpSelect.className = 'ww-select ww-input-field';
+            [
+                { val: 'confirmed', text: labelConfirmed },
+                { val: 'declined',  text: labelDeclined  },
+            ].forEach(({ val, text }) => {
+                const opt = document.createElement('option');
+                opt.value = val;
+                opt.textContent = text;
+                opt.selected = (ev.rsvp_status === val);
+                rsvpSelect.appendChild(opt);
+            });
+            rsvpGroup.appendChild(rsvpLabel);
+            rsvpGroup.appendChild(rsvpSelect);
+            section.appendChild(rsvpGroup);
+
+            // Pax select (shown only when confirmed)
+            const paxGroup = document.createElement('div');
+            paxGroup.className = 'ww-field-group ww-only-when-confirmed';
+            const paxLabel = document.createElement('label');
+            paxLabel.textContent = labelPaxQ;
+            const paxSelect = document.createElement('select');
+            paxSelect.name = `pax_${ev.id}`;
+            paxSelect.className = 'ww-select ww-input-field';
+            const selectedPax = ev.pax_confirmed != null ? ev.pax_confirmed : ev.pax_allocated;
+            for (let i = 1; i <= maxPax; i++) {
+                const opt = document.createElement('option');
+                opt.value = i;
+                opt.textContent = i;
+                opt.selected = (Number(selectedPax) === i);
+                paxSelect.appendChild(opt);
+            }
+            paxGroup.appendChild(paxLabel);
+            paxGroup.appendChild(paxSelect);
+            section.appendChild(paxGroup);
+
+            // Meal preference (shown only when confirmed + feature enabled)
+            if (hasMeal) {
+                const mealGroup = document.createElement('div');
+                mealGroup.className = 'ww-field-group ww-only-when-confirmed';
+                const mealLabel = document.createElement('label');
+                mealLabel.textContent = labelMealQ;
+                const mealInput = document.createElement('input');
+                mealInput.type = 'text';
+                mealInput.name = `meal_${ev.id}`;
+                mealInput.className = 'ww-input ww-input-field';
+                mealInput.placeholder = '...';
+                mealInput.value = ev.meal_preference || '';
+                mealGroup.appendChild(mealLabel);
+                mealGroup.appendChild(mealInput);
+                section.appendChild(mealGroup);
+            }
+
+            // Additional guest name (shown only when confirmed + feature enabled)
+            if (hasAdditionalGuest) {
+                const additionalGroup = document.createElement('div');
+                additionalGroup.className = 'ww-field-group ww-only-when-confirmed';
+                const additionalLabel = document.createElement('label');
+                additionalLabel.textContent = labelAdditionalQ;
+                const additionalInput = document.createElement('input');
+                additionalInput.type = 'text';
+                additionalInput.name = `additional_guest_name_${ev.id}`;
+                additionalInput.className = 'ww-input ww-input-field';
+                additionalInput.placeholder = '...';
+                additionalInput.value = ev.additional_guest_name || '';
+                additionalGroup.appendChild(additionalLabel);
+                additionalGroup.appendChild(additionalInput);
+                section.appendChild(additionalGroup);
+            }
+
+            // Dietary restriction (shown only when confirmed + feature enabled)
+            if (hasDietaryRestriction) {
+                const dietaryGroup = document.createElement('div');
+                dietaryGroup.className = 'ww-field-group ww-only-when-confirmed';
+                const dietaryLabel = document.createElement('label');
+                dietaryLabel.textContent = labelDietaryQ;
+                const dietaryInput = document.createElement('input');
+                dietaryInput.type = 'text';
+                dietaryInput.name = `dietary_restriction_${ev.id}`;
+                dietaryInput.className = 'ww-input ww-input-field';
+                dietaryInput.placeholder = '...';
+                dietaryInput.value = ev.dietary_restriction || '';
+                dietaryGroup.appendChild(dietaryLabel);
+                dietaryGroup.appendChild(dietaryInput);
+                section.appendChild(dietaryGroup);
+            }
+
+            return section;
+        },
+
+        /* ── Visibility toggle ──────────────────────────────────────────────── */
+
+        applyDeclineVisibility: function () {
+            const eventSections = $('#ww-events-list .ww-form-section:not(.ww-global-section)');
+            let allDeclined = true;
+
+            eventSections.each(function () {
+                const section  = $(this);
+                const select   = section.find('select[name^="rsvp_status_"]');
+                const declined = select.length && select.val() === 'declined';
+                if (!declined) allDeclined = false;
+                section.find('.ww-only-when-confirmed').toggle(!declined);
+            });
+
+            $('.ww-global-section').toggle(!allDeclined);
+        },
+
+        /* ── Status display ─────────────────────────────────────────────────── */
+
+        showStatus: function (id) {
+            $('#ww-loading').hide();
+            $(`#${id}`).show();
+        },
+
+        /**
+         * Show an inline error message instead of blocking alert().
+         * Requires a <div id="ww-error-msg"></div> in your template.
+         * Falls back to console.error if the element is absent.
+         */
+        showInlineError: function (msg) {
+            const el = document.getElementById('ww-error-msg');
+            if (el) {
+                el.textContent = msg;
+                el.style.display = 'block';
+            } else {
+                console.error('[GMS Elite] Submit error:', msg);
+            }
+        },
+
+        hideInlineError: function () {
+            const el = document.getElementById('ww-error-msg');
+            if (el) el.style.display = 'none';
+        },
+
+        /* ── Events / submit ────────────────────────────────────────────────── */
+
+        bindEvents: function () {
+            // Re-evaluate decline visibility whenever any RSVP select changes
+            $('#ww-bulk-rsvp-form').on(
+                'change',
+                'select[name^="rsvp_status_"]',
+                () => this.applyDeclineVisibility()
+            );
+
+            // Submit — fetch only, no full-page reload
+            $('#ww-bulk-rsvp-form').on('submit', async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.hideInlineError();
+
+                const btn = $('#ww-submit-btn').attr('disabled', true).text('Processing...');
+                const baseUrl = (wwGmsConfig.apiUrl || '').replace(/\/$/, '');
+
+                const payload = {
+                    secret_url_param: this.token,
+                    events: this.state.events.map(ev => ({
+                        event_id:              ev.id,
+                        rsvp_status:           $(`[name="rsvp_status_${ev.id}"]`).val(),
+                        pax_confirmed:         String($(`[name="pax_${ev.id}"]`).val() || ''),
+                        meal_preference:       $(`[name="meal_${ev.id}"]`).val() || '',
+                        additional_guest_name: $(`[name="additional_guest_name_${ev.id}"]`).val() || '',
+                        dietary_restriction:   $(`[name="dietary_restriction_${ev.id}"]`).val() || '',
+                    })),
+                    accommodation_details: $('[name="global_accommodation"]').val() || '',
+                    transport_info:        $('[name="global_transport"]').val()        || '',
+                    remark:                $('[name="global_remark"]').val()           || '',
+                };
+
+                try {
+                    const res = await fetchWithTimeout(
+                        `${baseUrl}/rsvp`,
+                        {
+                            method:   'POST',
+                            headers:  { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+                            body:     JSON.stringify(payload),
+                            redirect: 'manual',
+                        }
+                    );
+
+                    if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
+                        throw new Error('RSVP endpoint redirected — periksa API URL.');
+                    }
+
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok || !(data.success === true || (data.data && data.message))) {
+                        throw new Error(data.message || data.error || 'Gagal mengirim RSVP.');
+                    }
+
+                    // Merge server response into state using the shared normalizer
+                    if (data.data) {
+                        this.state = { ...this.state, ...data.data };
+                        this.normalizeStateFromEvents(this.state);   // ← single call, no duplication
+                        this.syncAll();
+                        this.renderEliteUI();
+                    }
+
+                    $('#ww-form-content').hide();
+                    $('#ww-success-screen').fadeIn();
+
+                } catch (err) {
+                    const msg = err.name === 'AbortError'
+                        ? 'Request timed out. Silakan coba lagi.'
+                        : (err.message || 'Gagal mengirim RSVP.');
+                    this.showInlineError(msg);
+                } finally {
+                    btn.attr('disabled', false).text(this.getLabel('submit_button'));
+                }
+            });
+        },
+    };
+
+    $(document).ready(() => GMS_ENGINE.init());
+
+})(jQuery);
